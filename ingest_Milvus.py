@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import csv
 import os
 import glob
 from typing import List
@@ -31,6 +32,8 @@ load_dotenv()
 # Load environment variables
 source_directory = os.environ.get('SOURCE_DIRECTORY', 'source_documents')
 embeddings_model_name = os.environ.get('EMBEDDINGS_MODEL_NAME')
+list_files = os.environ.get('LIST_FILES')
+remote_path = os.environ.get('REMOTE_PATH')
 collection_name = os.environ.get('MILVUS_COLLECTION_NAME')
 milvus_h = os.environ.get('MILVUS_HOST')
 milvus_p = os.environ.get('MILVUS_PORT')
@@ -63,20 +66,21 @@ class MyElmLoader(UnstructuredEmailLoader):
 
 # Map file extensions to document loaders and their arguments
 LOADER_MAPPING = {
-    ".csv": (CSVLoader, {}),
+    #".csv": (CSVLoader, {}),
     #".docx": (Docx2txtLoader, {}),
-    ".doc": (UnstructuredWordDocumentLoader, {}),
-    ".docx": (UnstructuredWordDocumentLoader, {}),
-    ".enex": (EverNoteLoader, {}),
-    ".eml": (MyElmLoader, {}),
-    ".epub": (UnstructuredEPubLoader, {}),
-    ".html": (UnstructuredHTMLLoader, {}),
-    ".md": (UnstructuredMarkdownLoader, {}),
-    ".odt": (UnstructuredODTLoader, {}),
+    #".doc": (UnstructuredWordDocumentLoader, {}),
+    #".docx": (UnstructuredWordDocumentLoader, {}),
+    #".enex": (EverNoteLoader, {}),
+    #".eml": (MyElmLoader, {}),
+    #".epub": (UnstructuredEPubLoader, {}),
+    #".html": (UnstructuredHTMLLoader, {}),
+    #".md": (UnstructuredMarkdownLoader, {}),
+    #".msg": (MyElmLoader, {}),
+    #".odt": (UnstructuredODTLoader, {}),
     ".pdf": (PyMuPDFLoader, {}),
-    ".ppt": (UnstructuredPowerPointLoader, {}),
-    ".pptx": (UnstructuredPowerPointLoader, {}),
-    ".txt": (TextLoader, {"encoding": "utf8"}),
+    #".ppt": (UnstructuredPowerPointLoader, {}),
+    #".pptx": (UnstructuredPowerPointLoader, {}),
+    #".txt": (TextLoader, {"encoding": "utf8"}),
     # Add more mappings for other file extensions and loaders as needed
 }
 
@@ -100,11 +104,29 @@ def load_documents(source_dir: str, ignored_files: List[str] = []) -> List[Docum
     Loads all documents from the source documents directory, ignoring specified files
     """
     all_files = []
-    for ext in LOADER_MAPPING:
-        all_files.extend(
-            glob.glob(os.path.join(source_dir, f"**/*{ext}"), recursive=True)
-        )
+    if os.path.isfile(list_files):
+        with open(list_files, "r") as csvfile:
+            reader_csv = csv.reader(csvfile, delimiter=";")
+            next(reader_csv, None)  # skip the headers
+            for row in reader_csv:
+                # 3rd value is the extension of the file
+                if row[2] in LOADER_MAPPING:
+                    #Path is 2nd value and replace mount path
+                    my_path = row[1]
+                    my_path = my_path.replace(remote_path,source_dir)
+                    my_path =  my_path.replace("\\","/")
+                    all_files.append(my_path)                
+    else:
+        for ext in LOADER_MAPPING:
+            all_files.extend(
+                glob.glob(os.path.join(source_dir, f"**/*{ext}"), recursive=True)
+            )
     filtered_files = [file_path for file_path in all_files if file_path not in ignored_files]
+    #To debug
+    #print(f"All len = {len(all_files)}")
+    #print(f"Ignored len = {len(ignored_files)}")
+    #print(f"Filtered len = {len(filtered_files)}")
+    #return None
 
     with Pool(processes=os.cpu_count()) as pool:
         results = []
@@ -142,14 +164,26 @@ def main():
     
     if milvus_store.col:
         # Update and store new files if any
+        all_res = []
+        #Milvus has a max for collection rpc msg
+        # Work around to extract all data without iterator of version 2.3
         res = milvus_store.col.query(
             expr = "pk >= 0",
-            output_fields = ["pk", "source"])
-        print(f"Appending to existing Milvus vectorstore collection {collection_name}")
-       
-        texts = process_documents([metadata['source'] for metadata in res])
-        print(f"Creating embeddings. May take some minutes...")
+            output_fields = ["pk"])
+        for i in range(0,len(res),docs_batch_size):
+            my_str = [x["pk"] for x in res[i:i+docs_batch_size]]
+            my_str = ','.join(map(str,my_str))
+            res_id = milvus_store.col.query(
+                expr = "pk in [" + my_str + "]",
+                output_fields = ["pk", "source"])
+            all_res.extend(res_id)
+        #remove file duplicates since used text_splitter
+        all_src = list(set([metadata['source'] for metadata in all_res]))
         
+        print(f"Appending to existing Milvus vectorstore collection {collection_name}")
+        texts = process_documents(all_src)
+        
+        print(f"Creating embeddings. May take some minutes...")
         #Milvus seems to manage batch by itself, used with Chroma
         for i in range(0,len(texts),docs_batch_size):
             milvus_store.add_documents(texts[i:i+docs_batch_size])
