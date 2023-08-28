@@ -4,8 +4,9 @@ from langchain.chains import RetrievalQA
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain.vectorstores import Milvus
-from langchain.llms import GPT4All, LlamaCpp, HuggingFacePipeline
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from langchain.llms import GPT4All, LlamaCpp, HuggingFacePipeline, OpenLLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import BitsAndBytesConfig, pipeline
 import os
 import argparse
 import time
@@ -17,16 +18,27 @@ load_dotenv()
 embeddings_model_name = os.environ.get("EMBEDDINGS_MODEL_NAME")
 model_type = os.environ.get('MODEL_TYPE')
 model_path = os.environ.get('MODEL_PATH')
+openllm_server_host = os.environ.get('OPENLLM_SERVER_HOST')
+openllm_server_port = os.environ.get('OPENLLM_SERVER_PORT')
 collection_name = os.environ.get('MILVUS_COLLECTION_NAME')
 milvus_h = os.environ.get('MILVUS_HOST')
 milvus_p = os.environ.get('MILVUS_PORT')
 model_n_ctx = int(os.environ.get('MODEL_N_CTX'))
 model_n_batch = int(os.environ.get('MODEL_N_BATCH',8))
 target_source_chunks = int(os.environ.get('TARGET_SOURCE_CHUNKS',4))
+score_threshold  = float(os.environ.get('SCORE_THRESHOLD',0.8))
+
+nf4_config = BitsAndBytesConfig(
+   load_in_4bit=True,
+   bnb_4bit_quant_type="nf4",
+   bnb_4bit_use_double_quant=True,
+   bnb_4bit_compute_dtype=torch.bfloat16
+)
 
 def main():
     # Parse the command line arguments
     args = parse_arguments()
+    # To select model see: https://huggingface.co/spaces/mteb/leaderboard
     embeddings = HuggingFaceEmbeddings(model_name=embeddings_model_name)
 
     milvus_store = Milvus(embedding_function=embeddings,
@@ -34,7 +46,9 @@ def main():
         drop_old = False,
         connection_args={"host": milvus_h, "port": milvus_p})
 
-    retriever = milvus_store.as_retriever(search_kwargs={"k": target_source_chunks})
+    retriever = milvus_store.as_retriever(
+            search_kwargs={"k": target_source_chunks,'score_threshold': score_threshold}
+            )
     # activate/deactivate the streaming StdOut callback for LLMs
     callbacks = [] if args.mute_stream else [StreamingStdOutCallbackHandler()]
     # Prepare the LLM
@@ -54,9 +68,7 @@ def main():
                 verbose=False
                 )
     elif model_type == "HuggingFace":
-        model = AutoModelForCausalLM.from_pretrained(model_path, device_map="auto",
-                torch_dtype=torch.float16,load_in_8bit=True
-                )
+        model = AutoModelForCausalLM.from_pretrained(model_path, quantization_config=nf4_config)
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         generate_text = pipeline(model=model, 
                 tokenizer=tokenizer,
@@ -69,6 +81,11 @@ def main():
                 repetition_penalty=1.1  # without this output begins repeating
                 )
         llm = HuggingFacePipeline(pipeline=generate_text)
+    elif model_type == "OpenLLM":
+        openllm_url = "http://" + openllm_server_host + ":" + openllm_server_port
+        print(openllm_url)
+        #llm = OpenLLM(server_url=openllm_url, server_type='grpc')
+        llm = OpenLLM(server_url=openllm_url, server_type='http')
     else:
         # raise exception if model_type is not supported
         raise Exception(f"Model type {model_type} is not supported. Please choose one of the following: LlamaCpp, GPT4All")
