@@ -5,7 +5,7 @@ from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain.vectorstores import Milvus
 from langchain.llms import GPT4All, LlamaCpp, HuggingFacePipeline, OpenLLM
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from transformers import BitsAndBytesConfig, pipeline
 import os
 import argparse
@@ -69,16 +69,21 @@ def main():
                 )
     elif model_type == "HuggingFace":
         model = AutoModelForCausalLM.from_pretrained(model_path, quantization_config=nf4_config)
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_path,use_fast=True)
+        tokenizer.pad_token = tokenizer.eos_token
+
+        generation_config = GenerationConfig.from_pretrained(model_path)
+        generation_config.max_new_tokens = model_n_ctx
+        generation_config.temperature = 0.0001
+        generation_config.top_p = 0.95
+        generation_config.do_sample = True
+        generation_config.repetition_penalty = 1.15
+
         generate_text = pipeline(model=model, 
                 tokenizer=tokenizer,
                 return_full_text=True,  # langchain expects the full text
                 task='text-generation',
-                # we pass model parameters here too
-                #stopping_criteria=stopping_criteria,  # without this model rambles during chat
-                temperature=0.1,  # 'randomness' of outputs, 0.0 is the min and 1.0 the max
-                max_new_tokens=model_n_ctx,  # mex number of tokens to generate in the output
-                repetition_penalty=1.1  # without this output begins repeating
+                generation_config=generation_config,
                 )
         llm = HuggingFacePipeline(pipeline=generate_text)
     elif model_type == "OpenLLM":
