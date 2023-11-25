@@ -89,8 +89,8 @@ def load_single_document(file_path: str) -> List[Document]:
     ext = "." + file_path.rsplit(".", 1)[-1]
     if ext in LOADER_MAPPING:
         loader_class, loader_args = LOADER_MAPPING[ext]
-        loader = loader_class(file_path, **loader_args)
         try:
+            loader = loader_class(file_path, **loader_args)
             data = loader.load()
             return data
         except Exception as e:
@@ -134,7 +134,6 @@ def load_documents(source_dir: str, ignored_files: List[str] = []) -> List[Docum
             for i, docs in enumerate(pool.imap_unordered(load_single_document, filtered_files)):
                 results.extend(docs)
                 pbar.update()
-
     return results
 
 def process_documents(ignored_files: List[str] = []) -> List[Document]:
