@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 from dotenv import load_dotenv
+
 from langchain.chains import RetrievalQA
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+#from langchain.prompts import ChatPromptTemplate
+from langchain.prompts import PromptTemplate
 from langchain.vectorstores import Milvus
 from langchain.llms import GPT4All, LlamaCpp, HuggingFacePipeline, OpenLLM
+
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from transformers import BitsAndBytesConfig, pipeline
 import os
 import argparse
 import time
 import torch
-
 
 load_dotenv()
 
@@ -27,6 +30,8 @@ model_n_ctx = int(os.environ.get('MODEL_N_CTX'))
 model_n_batch = int(os.environ.get('MODEL_N_BATCH',8))
 target_source_chunks = int(os.environ.get('TARGET_SOURCE_CHUNKS',4))
 score_threshold  = float(os.environ.get('SCORE_THRESHOLD',0.8))
+fetch_k = int(os.environ.get('FETCH_K',20))
+lambda_mult = float(os.environ.get('LAMBDA_MULT',0.25))
 
 nf4_config = BitsAndBytesConfig(
    load_in_4bit=True,
@@ -34,6 +39,7 @@ nf4_config = BitsAndBytesConfig(
    bnb_4bit_use_double_quant=True,
    bnb_4bit_compute_dtype=torch.bfloat16
 )
+
 
 def main():
     # Parse the command line arguments
@@ -44,11 +50,22 @@ def main():
     milvus_store = Milvus(embedding_function=embeddings,
         collection_name=collection_name,
         drop_old = False,
-        connection_args={"host": milvus_h, "port": milvus_p})
+        connection_args={"host": milvus_h, "port": milvus_p},
+        search_params={"HNSW": {"metric_type": "L2", "params": {"ef": fetch_k}}})
 
-    retriever = milvus_store.as_retriever(
-            search_kwargs={"k": target_source_chunks,'score_threshold': score_threshold}
-            )
+#Use Similarity
+#    retriever = milvus_store.as_retriever(
+#            search_kwargs={"k": target_source_chunks,'score_threshold': score_threshold}
+#           )
+
+#Use MMR when many similar documents (e.g. many versions of same documents)
+
+    my_retriever = milvus_store.as_retriever(search_type="mmr",
+                   search_kwargs={"k": target_source_chunks,
+                                   'fetch_k':fetch_k, 
+                                   'lambda_mult': lambda_mult}
+               )
+
     # activate/deactivate the streaming StdOut callback for LLMs
     callbacks = [] if args.mute_stream else [StreamingStdOutCallbackHandler()]
     # Prepare the LLM
@@ -95,12 +112,40 @@ def main():
         # raise exception if model_type is not supported
         raise Exception(f"Model type {model_type} is not supported. Please choose one of the following: LlamaCpp, GPT4All")
     
-# For chain type info, see https://towardsdatascience.com/4-ways-of-question-answering-in-langchain-188c6707cc5a
-# options are : stuff, map_reduce, refine or map-rerank
+    # Prompt
+    # Optionally, pull from the Hub
+    # from langchain import hub
+    # prompt = hub.pull("rlm/rag-prompt")
+    # Or, define your own:
+#    template = """Answer the question based only on the following context:
+#    {context}
+#
+#    Question: {question}
+#    """
+#    prompt = ChatPromptTemplate.from_template(template)
+
+#    combine_template = "Write a summary of the following text:\n\n{summaries}"
+#    combine_prompt_template = PromptTemplate.from_template(template=combine_template)
+#
+#    question_template = """Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer. Use three sentences maximum. Keep the answer as concise as possible. Always say "thanks for asking!" at the end of the answer.
+#    {context}
+#    Question: {question}
+#    Helpful Answer:"""
+#    question_prompt_template = PromptTemplate.from_template(template=question_template)
+#
+
+    # For chain type info, see https://towardsdatascience.com/4-ways-of-question-answering-in-langchain-188c6707cc5a
+    # options are : stuff, map_reduce, refine or map-rerank
+    # See also https://medium.com/@onkarmishra/using-langchain-for-question-answering-on-own-data-3af0a82789ed
     qa = RetrievalQA.from_chain_type(llm=llm, 
             chain_type="stuff", 
-            retriever=retriever, 
-            return_source_documents= not args.hide_source
+#            chain_type="map_reduce",
+#            chain_type="refine",
+            retriever=my_retriever, 
+            return_source_documents= not args.hide_source,
+#            chain_type_kwargs={"question_prompt": question_prompt_template,
+#                               "combine_prompt": combine_prompt_template}
+
             )
     # Interactive questions and answers
     while True:
