@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import csv
+import re
 import os
 import glob
 from typing import List
@@ -40,6 +41,33 @@ milvus_p = os.environ.get('MILVUS_PORT')
 docs_batch_size = int(os.environ.get('MAX_DOCS_BATCH_SIZE'))
 chunk_size = 500
 chunk_overlap = 50
+
+
+def extract_project_metadata(filepath):
+    """
+    Extract metadata from a project filepath.
+    :param filepath: str, the filepath of the project directory
+    :return: dict, a dictionary containing the extracted metadata
+    """
+
+    # Initialize an empty dictionary to store the extracted metadata
+    metadata = {}
+
+    # Use regular expressions to extract the project number and folder names
+    project_folder = r'^.*[\\\/]03 - Projets en cours[\\\/]'
+    project_name = r'([0-9]{4})\s*-\s*([\sa-zA-Z0-9_-]+)'
+    subfolder = r'[\\\/]([\sa-zA-Z0-9_-]+)[\\\/].*$'
+    s_str = project_folder + project_name + subfolder
+
+    match = re.search(r'^(.*[\\\/])?(\.?.*?)(\.[^.]*?|)$', filepath)
+    if match:
+        match2 = re.search(s_str, match.group(1)) 
+        if match2:
+            project_number, project_name, folder_name = match2.groups()
+            metadata['project_number'] = project_number
+            metadata['project_name'] = project_name
+            metadata['folder_name'] = folder_name
+    return metadata
 
 # Custom document loaders
 class MyElmLoader(UnstructuredEmailLoader):
@@ -92,6 +120,9 @@ def load_single_document(file_path: str) -> List[Document]:
         try:
             loader = loader_class(file_path, **loader_args)
             data = loader.load()
+            prj_metadata = extract_project_metadata(file_path)
+            for doc in data:
+                doc.metadata.update(prj_metadata)
             return data
         except Exception as e:
             # Add file_path to exception message
@@ -127,7 +158,7 @@ def load_documents(source_dir: str, ignored_files: List[str] = []) -> List[Docum
     #print(f"Ignored len = {len(ignored_files)}")
     #print(f"Filtered len = {len(filtered_files)}")
     #return None
-
+    
     with Pool(processes=os.cpu_count()) as pool:
         results = []
         with tqdm(total=len(filtered_files), desc='Loading new documents', ncols=80) as pbar:
