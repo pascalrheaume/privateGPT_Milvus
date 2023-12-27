@@ -2,8 +2,11 @@ import logging
 from pathlib import Path
 
 from llama_index import Document
+#from llama_index import download_loader
 from llama_index.readers import JSONReader, StringIterableReader
 from llama_index.readers.file.base import DEFAULT_FILE_READER_CLS
+from llama_index.readers.file.image_caption_reader import ImageCaptionReader
+
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +51,14 @@ class IngestionHelper:
             return string_reader.load_data([file_data.read_text()])
 
         logger.debug("Specific reader found for extension=%s", extension)
-        return reader_cls().load_data(file_data)
+        
+        # TODO: integrate this option 
+        # Workaround to use caption and not image reader 
+        if extension == '.jpg':
+            loader = ImageCaptionReader()
+            return loader.load_data(file_data)
+        else:
+            return reader_cls().load_data(file_data)
 
     @staticmethod
     def _exclude_metadata(documents: list[Document]) -> None:

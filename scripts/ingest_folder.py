@@ -20,20 +20,22 @@ class LocalIngestWorker:
 
         self._files_under_root_folder: list[Path] = list()
 
-    def _find_all_files_in_folder(self, root_path: Path) -> None:
+    def _find_all_files_in_folder(self, root_path: Path, excluded_ext: list[str]) -> None:
         """Search all files under the root folder recursively.
         Count them at the same time
         """
         for file_path in root_path.iterdir():
             if file_path.is_file():
                 self.total_documents += 1
-                self._files_under_root_folder.append(file_path)
+                extension = Path(file_path).suffix
+                if extension not in excluded_ext:
+                    self._files_under_root_folder.append(file_path)
             elif file_path.is_dir():
-                self._find_all_files_in_folder(file_path)
+                self._find_all_files_in_folder(file_path,excluded_ext)
 
-    def ingest_folder(self, folder_path: Path) -> None:
+    def ingest_folder(self, folder_path: Path, excluded_ext: list[str]) -> None:
         # Count total documents before ingestion
-        self._find_all_files_in_folder(folder_path)
+        self._find_all_files_in_folder(folder_path, excluded_ext)
         self._ingest_all(self._files_under_root_folder)
 
     def _ingest_all(self, files_to_ingest: list[Path]) -> None:
@@ -66,8 +68,15 @@ parser.add_argument(
 )
 parser.add_argument(
     "--log-file",
-    help="Optional path to a log file. If provided, logs will be written to this file.",
+    help="optional path to a log file. if provided, logs will be written to this file.",
     type=str,
+    default=None,
+)
+parser.add_argument(
+    "--excluded-ext",
+    help="optional extensions list (ex.: .mp4 .mp3) to be excluded from ingestion",
+    type=str,
+    nargs="+",
     default=None,
 )
 args = parser.parse_args()
@@ -91,7 +100,7 @@ if __name__ == "__main__":
 
     ingest_service = global_injector.get(IngestService)
     worker = LocalIngestWorker(ingest_service)
-    worker.ingest_folder(root_path)
+    worker.ingest_folder(root_path,args.excluded_ext)
 
     if args.watch:
         logger.info(f"Watching {args.folder} for changes, press Ctrl+C to stop...")
